@@ -1,128 +1,163 @@
 """create_data.py
 
-Quick and dirty script to take the orignal GENETAG data and create resources for
-the Datasource.
+Script to take the orignal BioText protein-protein interactons data and create
+data resources.
+
+This project has been shelved for now, see the README.md file at the top-level
+of this repository for reasons.
 
 Usage:
 
     $ python3 create_data.py
 
-This script assumes that GENETAG data from the MedTag data download ftp site at
-ftp://ftp.ncbi.nlm.nih.gov/pub/lsmith/MedTag/ are available in ../resources. In
-particular, it expects the following files to be there (variables GENETAG_SENTS
-and GENETAG_GOLD references those files):
+This creates the needed data in ../resources/data.
 
-    genetag/genetag.sent
-    genetag/Gold.format
+This script assumes that BioText data with protein-protein interactions are
+available in ../resources/biotext/protein-protein. In particular, it needs the
+following two files:
 
-Data files are written to ../resources/data. There is a file for each sentence,
-an example is (original does not have the indentation, it alos has the sentence
-on one line):
+   sentences_from_citations_that_contain_both_proteins_for_all_interactions.txt
+   sentences_from_full_text_that_contain_both_proteins_for_all_interactions.txt
 
-    Yeast Gal11 protein mediates the transcriptional activation signal of two
-    different transacting factors, Gal4 and general regulatory factor
-    I/repressor/activator site binding protein 1/translation upstream factor.
+These files can be downloaded from http://biotext.berkeley.edu/data.html.
 
-    0	19	Yeast Gal11 protein
-    105	109	Gal4
-    114	141	general regulatory factor I
-    142	184	repressor/activator site binding protein 1
-    185	212	translation upstream factor
+For some reason, the second of those files was not UTF8 encoded. It looks like
+it may have been the latin-1 encoding and it also looks like it makes strange
+use of U+0096 (START OF GUARDED AREA), which the code below replaces with a
+dash.
 
-The original offsets in Gold.format were a bit peculiar in that they did not
-refer to actual offsets in genetag.sent. Instead the offsets were only counting
-non-space characters. The code in this script adjusts the offsets.
+Data Description
+
+Sentences with less than two PROT annotations: 0
+Sentences with 2 protein annotations: 1003
+Sentences with 3 protein annotations: 369
+Sentences with 4 protein annotations: 130
+Sentences with 5 protein annotations: 47
+Sentences with 6 protein annotations: 13
+Sentences with 7 protein annotations: 3
+Sentences with 8 protein annotations: 4
+Sentences with 9 protein annotations: 0
+Sentences with 10 protein annotations: 1
 
 """
 
 import os
 import codecs
+import io
 
-GENETAG_SENTS = '../resources/genetag/genetag.sent'
-GENETAG_GOLD = '../resources/genetag/Gold.format'
+
+BIOTEXT_DIR = '../resources/biotext/protein-protein/'
+NAME = 'sentences_from_%s_that_contain_both_proteins_for_all_interactions.txt'
+INTERACTIONS1 = BIOTEXT_DIR + NAME % "full_papers"
+INTERACTIONS2 = BIOTEXT_DIR + NAME % "citations"
+
+
+DATA = {}
+
+DATA_DIR = os.path.join('..', 'resources', 'data')
+PUBMED_IDS_FILE = os.path.join(DATA_DIR, 'pubmed_ids.txt')
 
 
 def read_data():
-    sentences = {}
-    sentence_id = None
-
     count = 0
-    for line in open(GENETAG_SENTS):
+    for line in codecs.open(INTERACTIONS1, encoding="latin_1"):
         count += 1
-        line = line.strip()
-        if line.isalnum():
-            sentence_id = line
-        else:
-            sentences[sentence_id] = (line, [])
-
-    for line in open(GENETAG_GOLD):
-        (sent_id, offsets, text) = line.strip().split('|')
-        if sent_id in sentences:
-            sentences[sent_id][1].append((offsets, text))
-        else:
-            print("WARNING: no sentence for %s" % sent_id)
-
-    return sentences
+        if line.strip():
+            (relation, sentences) = line.strip().split('=====')
+            read_sentences(relation, sentences)
 
 
-def print_data(sentences):
-    count = 0
-    data_dir = os.path.join('..', 'resources', 'data')
-    for s in sentences:
-        sent = sentences[s][0]
-        annotations = sentences[s][1]
-        count += 1
-        if count % 100 == 0: print(count)
-        #if count > 1000: break
-        subdir1 = s[:3]
-        subdir2 = s[:4]
-        path = os.path.join(data_dir, subdir1, subdir2)
-        fname = os.path.join(path, s)
-        if not os.path.exists(path):
-            os.makedirs(path)
-        with codecs.open(fname, 'w', encoding='utf8') as fh:
-            fh.write(sent + u"\n\n")
-            for annotation in annotations:
-                offsets = annotation[0]
-                text = annotation[1]
-                p1, p2 = [int(p) for p in offsets.split()]
-                p1a = adjust_offset(sent, p1)
-                p2a = adjust_offset(sent, p2) + 1
-                if sent[p1a:p2a] != text:
-                    print("WARNING: incorrect offset calculation for %s" % s)
-                    print("         %s %s %s" % (p1, p2, text))
-                    print("         %s %s %s" % (p1a, p2a, sent[p1a:p2a]))
-                    # This happens only once, not sure why, but we fix it here
-                    # in a hackish way
-                    if s == 'P02196565T0000' and p1a == 184:
-                        p1a += 1
-                        print("         %s %s %s" % (p1a, p2a, sent[p1a:p2a]))
-                fh.write("%s\t%s\t%s\n" % (p1a, p2a, annotation[1]))
+def read_sentences(relation, sentences):
+    for sentence in sentences.split('||'):
+        identifier, text = sentence.split('==>')
+        pubmed_id, prot1, prot2 = identifier.split('_')
+        text = text.replace("\N{START OF GUARDED AREA}", '-')
+        DATA.setdefault(pubmed_id, []).append((pubmed_id, relation, prot1, prot2, text))
 
 
-def adjust_offset(sentence, offset):
-    adjusted = 0
-    if offset == 0:
-        return adjusted
-    for i, c in enumerate(sentence):
-        adjusted += 1
-        if c != ' ':
-            offset += -1
-        if offset == 0:
-            if sentence[i+1] == ' ':
-                adjusted += 1
-            return adjusted
+def print_data():
 
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR)
 
-def print_list(sentences):
-    fname = os.path.join('..', 'resources', 'data', 'sentences.txt')
-    with codecs.open(fname, 'w', encoding='utf8') as fh:
-        for s in sentences:
-            fh.write(s + u"\n")
+    with open(PUBMED_IDS_FILE, 'w') as fh_identifiers:
+        for pubmedID in DATA:
+            #if pubmedID != '10545121': continue
+            fh_identifiers.write("%s\n" % pubmedID)
+            alltext = io.StringIO()
+            offset = 0
+            annotations = 0
+            proteinID = 0
+            with open(os.path.join(DATA_DIR, pubmedID), 'w') as fh:
+                #write_file(fh, DATA[pubmedID])
+                in_prot1 = False
+                in_prot2 = False
+                prot1_tokens = []
+                prot2_tokens = []
+                prot1_type = None
+                prot2_type = None
+                prot1_start = None
+                prot2_start = None
+                prot1_end = None
+                prot2_end = None
 
+                #print()
+                
+                for (pubmed_id, relation, prot1, prot2, text) in DATA[pubmedID]:
 
+                    #print(text)
 
+                    if text.count('<PROT') == 2:
+                        print(text.count('<PROT'), relation, text)
+                        #print(text.count('<PROT'), relation, '\n', text, '\n')
+                        
+                    for token in text.split():
+                        if token.startswith('<PROT1'):
+                            in_prot1 = True
+                            prot1_start = offset
+                            prot1_type = token[7:-1]
+                        elif token.startswith('<PROT2'):
+                            in_prot2 = True
+                            prot2_start = offset
+                            prot2_type = token[7:-1]
+                        elif token.startswith('</PROT1'):
+                            prot1_end = offset - 1
+                            #print('\n>>>', relation, prot1_type, prot1_start, prot1_end, prot1_tokens)
+                            prot1_tokens = []
+                            in_prot1 = False
+                        elif token.startswith('</PROT2'):
+                            prot2_end = offset - 1
+                            #print('\n>>>', relation, prot2_type, prot2_start, prot2_end, prot2_tokens)
+                            prot2_tokens = []
+                            in_prot2 = False
+                        else:
+                            alltext.write(token + " ")
+                            if in_prot1:
+                                prot1_tokens.append(token)
+                            elif in_prot2:
+                                prot2_tokens.append(token)
+                            offset += len(token) + 1
+
+                    #print()
+                    alltext.write("\n")
+                    offset += 1
+                    
+                    fh.write("%s\t%s\t%s\t%s\n" % (relation, prot1, prot2, text))
+
+            #print('***')
+            #print(alltext.getvalue())
+            
+            #break
+            
+                
+
+def write_file(fh, data):
+    for (pubmed_id, relation, prot1, prot2, text) in data:
+        fh.write("%s\t%s\t%s\t%s\n" % (relation, prot1, prot2, text))
+        
+
+        
+                
 if __name__ == '__main__':
-    sentences = read_data()
-    print_data(sentences)
-    print_list(sentences)
+    read_data()
+    print_data()
